@@ -20,11 +20,12 @@ union sigval sig;
 int tcf(int mes, int tpid){
     for (int i = 0; i < 10; i++){
         usleep(tts);
-        tts++;
         if (!sigqueue(tpid, mes, sig)){
-            tts--;
+            if (tts)
+                tts--;
             return 0;
         }
+        tts++;
     }
     return -1;
 }
