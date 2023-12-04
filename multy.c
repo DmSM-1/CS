@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <wait.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <time.h>
 
 
@@ -27,6 +28,39 @@ int out = 1;
 #define max(a,b) (a>b)?(a):(b)
 
 
+void mread(int* count, int semid, int* shmid, struct sembuf buf){
+    int w = 0;
+    int n = 0;
+    void** shared_memory = malloc((*count)*sizeof(void*));
+    for(int i = 0; i<(*count);i++)
+        shared_memory[i] = shmat(shmid[i], NULL, 0);
+
+    while(1){
+        update(w, 0);
+        int e = read(in, (char*)(shared_memory[w]+n), CAPACITY - n);
+
+        if (e == -1 && !n){
+            usleep(SLEEPTIME);
+            continue;
+        }
+        n += max(e, 0);
+
+        if(n == CAPACITY || (e==-1 && n) || e==0){
+            *((int*) (shared_memory[w]+CAPACITY-sizeof(int))) = n;
+            update(w, 2);
+            w++;
+            w %= (*count);
+            n = 0;
+        }
+        if (e == 0){
+            break;
+        }
+    }
+    update(*count, 1);
+    free(shared_memory);
+}
+
+
 int main(int argc, char** argv){
     int count = 1;
     char* c;
@@ -35,12 +69,12 @@ int main(int argc, char** argv){
     char charbuf[CAPACITY] = {0};
     if (argc == 2)
         count = strtol(argv[1], &c, 10);
-    int semid = semget(IPC_PRIVATE, count, 0777|IPC_CREAT);
+    int semid = semget(IPC_PRIVATE, count+1, 0777|IPC_CREAT);
     if (semid == -1){
         perror("semget:");
         exit(EXIT_FAILURE);
     }
-    for(int i = 0; i < count; i++){
+    for(int i = 0; i < count+1; i++){
         if  (semctl(semid, i, SETVAL, 0) == -1){
             perror("semctl");
             exit(EXIT_FAILURE);
@@ -68,8 +102,11 @@ int main(int argc, char** argv){
         void** shared_memory = malloc(count*sizeof(void*));
         for(int i = 0; i<count;i++)
             shared_memory[i] = shmat(shmid[i], NULL, 0);
+        
 
         while(1){
+            if (semctl(semid, count, GETVAL) && semctl(semid, w, GETVAL) == 0)
+                break;
             update(w, -1);
             int k = *((int*) (shared_memory[w]+CAPACITY-sizeof(int)));
             write(out, (char*)shared_memory[w], k);
@@ -80,36 +117,20 @@ int main(int argc, char** argv){
         exit(EXIT_SUCCESS);
     }
 
-
-    void** shared_memory = malloc(count*sizeof(void*));
-    for(int i = 0; i<count;i++)
-        shared_memory[i] = shmat(shmid[i], NULL, 0);
-
-    while(1){
-        update(w, 0);
-        int e = read(in, (char*)(shared_memory[w]+n), CAPACITY - n);
-
-        if (e == -1 && !n){
-            usleep(SLEEPTIME);
-            continue;
-        }
-        n += max(e, 0);
-
-        if(n == CAPACITY || (e==-1 && n)){
-            *((int*) (shared_memory[w]+CAPACITY-sizeof(int))) = n;
-            update(w, 2);
-            w++;
-            w %= count;
-            n = 0;
-        }
-        if (e == 0){
-            update(w, 1);
-            break;
+    if (argc <= 2)
+        mread(&count,semid, shmid, buf);
+    else if(argc > 2){
+        for(int i = 2; i<argc; i++){
+            if ((in = open(argv[i], O_RDONLY)) == -1)
+                continue;
+            mread(&count,semid, shmid, buf);
+            close(in);
         }
     }
+    
+
     for(int i = 0; i < count; i++)
         close(shmid[i]);
-    free(shared_memory);
     free(shmid);
     wait(NULL);
     
